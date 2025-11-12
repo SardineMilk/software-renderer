@@ -2,6 +2,26 @@
 #include <stdio.h>
 
 
+typedef struct {
+    int r;
+    int g;
+    int b;
+} Color;
+
+typedef struct {
+    int width;
+    int height;
+} Uniforms;
+
+static Color shader(int x, int y, const Uniforms *uni) {
+    int r = (float)x / ((float)uni->width/255.0);
+    int g = 0;
+    int b = (float)y / ((float)uni->height/255.0);
+
+    Color color = {r, g, b};
+    return color;
+}
+
 int main() {
     // Create window
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -12,7 +32,7 @@ int main() {
     int width = 800;
     int height = 600;
     SDL_Window *win = SDL_CreateWindow(
-        "SDL2 Example", 
+        "SDL2 Software Renderer", 
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         width, height, SDL_WINDOW_SHOWN
     );
@@ -31,11 +51,11 @@ int main() {
         return 1;
     }
 
+    Uniforms uni = {width, height};
 
     // Main Loop
     int running = 1;
     SDL_Event event;
-
     while (running) {
         // Event handling
         while (SDL_PollEvent(&event)) {
@@ -50,11 +70,8 @@ int main() {
         // Loop over every pixel
         for (int y = 0; y < height; ++y) {
             for (int x = 0; x < width; ++x) {
-                int r = (float)x / ((float)width/255.0);
-                int g = 0;
-                int b = (float)y / ((float)height/255.0);
-
-                pixels[(y * pitch) + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                Color pixel_color = shader(x, y, &uni);
+                pixels[(y * pitch) + x] = 0xFF000000 | (pixel_color.r << 16) | (pixel_color.g << 8) | pixel_color.b;
             }
         }
 
@@ -63,7 +80,6 @@ int main() {
         SDL_Delay(16);
     }
 
-    //SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
     return 0;
