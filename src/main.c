@@ -14,8 +14,8 @@
 #define FRAME_DELAY 16
 
 // Camera variables
-#define MOVE_SPEED 0.05f
-#define ROT_SPEED  0.03f
+#define MOVE_SPEED 0.03f
+#define ROT_SPEED  0.01f
 
 #define M_PI_2 1.57079632679f
 
@@ -37,6 +37,10 @@ typedef struct {
     float y;
     float z;
 } Vec3;
+
+typedef struct {
+    float m[3][3];
+} Mat3;
 
 typedef struct {
     Vec3 position;
@@ -67,6 +71,22 @@ static inline float length(Vec3 v) {
 
 static inline float sqlength(Vec3 v) {
     return v.x*v.x + v.y*v.y + v.z*v.z;
+}
+
+static Mat3 mat3_mul(Mat3 a, Mat3 b) {
+    Mat3 r;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            r.m[i][j] = a.m[i][0]*b.m[0][j] + a.m[i][1]*b.m[1][j] + a.m[i][2]*b.m[2][j];
+    return r;
+}
+
+static Vec3 mat3_mul_vec3(Mat3 m, Vec3 v) {
+    return (Vec3){
+        m.m[0][0]*v.x + m.m[0][1]*v.y + m.m[0][2]*v.z,
+        m.m[1][0]*v.x + m.m[1][1]*v.y + m.m[1][2]*v.z,
+        m.m[2][0]*v.x + m.m[2][1]*v.y + m.m[2][2]*v.z
+    };
 }
 
 Vec3 normalize(Vec3 v) {
@@ -123,6 +143,25 @@ static Color shader(int x, int y, Camera *camera, Vec3 forward, Vec3 right, Vec3
     }
 }
 
+static Mat3 camera_matrix(Camera *cam) {
+    float pitch = cam->rotation.x;
+    float yaw   = cam->rotation.y;
+
+    Mat3 Rx = {{
+        {1,          0,           0},
+        {0,  cosf(pitch), -sinf(pitch)},
+        {0,  sinf(pitch),  cosf(pitch)}
+    }};
+
+    Mat3 Ry = {{
+        { cosf(yaw), 0, sinf(yaw)},
+        {        0,  1,        0},
+        {-sinf(yaw), 0, cosf(yaw)}
+    }};
+
+    return mat3_mul(Ry, Rx);
+}
+
 int main() {
     // Create window
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -168,6 +207,8 @@ int main() {
     int running = 1;
     SDL_Event event;
     while (running) {
+        Uint64 start = SDL_GetPerformanceCounter();
+
         // Event handling
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) running = 0;
@@ -176,7 +217,7 @@ int main() {
                 int my = event.motion.yrel;
 
                 camera.rotation.y += mx * ROT_SPEED; // yaw
-                camera.rotation.x += my * ROT_SPEED; // pitch
+                camera.rotation.x -= my * ROT_SPEED; // pitch
 
                 // Clamp pitch
                 if (camera.rotation.x > M_PI_2) camera.rotation.x = M_PI_2;
@@ -188,15 +229,21 @@ int main() {
         const Uint8 *keys = SDL_GetKeyboardState(NULL);
 
         // Forward/right movement based on yaw
-        float yaw = camera.rotation.y;
-        Vec3 forward = {sinf(yaw), 0, cosf(yaw)};
-        Vec3 right = {cosf(yaw), 0, -sinf(yaw)};
-        Vec3 up = {0, 1, 0};
+        Mat3 camMat = camera_matrix(&camera);
+
+        Vec3 forward = mat3_mul_vec3(camMat, (Vec3){0, 0, 1});
+        Vec3 right   = mat3_mul_vec3(camMat, (Vec3){1, 0, 0});
+        Vec3 up      = mat3_mul_vec3(camMat, (Vec3){0, 1, 0});
+
         // Movement
-        if (keys[SDL_SCANCODE_W]) camera.position = add(camera.position, scale(forward, MOVE_SPEED));
-        if (keys[SDL_SCANCODE_S]) camera.position = add(camera.position, scale(forward, -MOVE_SPEED));
-        if (keys[SDL_SCANCODE_A]) camera.position = add(camera.position, scale(right, -MOVE_SPEED));
-        if (keys[SDL_SCANCODE_D]) camera.position = add(camera.position, scale(right, MOVE_SPEED));
+        float yaw = camera.rotation.y;
+        Vec3 flatForward = { sinf(yaw), 0, cosf(yaw) };
+        Vec3 flatRight   = { cosf(yaw), 0,-sinf(yaw) };
+
+        if (keys[SDL_SCANCODE_W]) camera.position = add(camera.position, scale(flatForward, MOVE_SPEED));
+        if (keys[SDL_SCANCODE_S]) camera.position = add(camera.position, scale(flatForward,-MOVE_SPEED));
+        if (keys[SDL_SCANCODE_A]) camera.position = add(camera.position, scale(flatRight,  -MOVE_SPEED));
+        if (keys[SDL_SCANCODE_D]) camera.position = add(camera.position, scale(flatRight,   MOVE_SPEED));
         if (keys[SDL_SCANCODE_SPACE]) camera.position.y -= MOVE_SPEED;
         if (keys[SDL_SCANCODE_LSHIFT]) camera.position.y += MOVE_SPEED;
 
@@ -214,7 +261,13 @@ int main() {
 
         SDL_BlitScaled(render_surf, NULL, window_surf, NULL);   
         SDL_UpdateWindowSurface(win);
-        SDL_Delay(FRAME_DELAY);
+
+        Uint64 end = SDL_GetPerformanceCounter();
+        float elapsed = (float)(end - start) / (float)SDL_GetPerformanceFrequency();
+        printf("FPS: %f\n", 1.0f / elapsed);
+
+        //SDL_Delay(FRAME_DELAY-elapsed);
+
     }
 
     SDL_DestroyWindow(win);
