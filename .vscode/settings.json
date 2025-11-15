@@ -2,6 +2,7 @@
     "files.associations": {
         "sdl.h": "c",
         "complex": "c",
-        "vector.h": "c"
+        "vector.h": "c",
+        "math.h": "c"
     }
 }

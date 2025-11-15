@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <math.h>
 #include <pthread.h>
+#include <inttypes.h>
 
 #include "vector.h"
 
@@ -10,8 +11,8 @@
 #define WINDOW_WIDTH 720
 #define WINDOW_HEIGHT 720
 
-#define RENDER_WIDTH 180 
-#define RENDER_HEIGHT 180
+#define RENDER_WIDTH 360
+#define RENDER_HEIGHT 360
 
 // Hardcoded delay between frames
 #define FRAME_DELAY 16
@@ -31,7 +32,7 @@ typedef struct {
 typedef struct {
     // 1: IsLeaf
     // 31: ChildPtr
-    uint32_t ChildPtr;
+    //uint32_t ChildPtr;
     uint64_t ChildMask;
 } Chunk;
 
@@ -58,6 +59,7 @@ typedef struct {
     Vec3 forward, right, up;
     uint32_t *pixels;
     int pitch;
+    uint64_t *voxels;
 } RenderJob;
 
 static Mat3 mat3_mul(Mat3 a, Mat3 b) {
@@ -82,11 +84,30 @@ Vec3 normalize(Vec3 v) {
     return scale(v, 1.0f / len);
 }
 
-static HitInfo raycast(Vec3 ro, Vec3 rd) {
+HitInfo traverseGrid(Vec3 box_position, Vec3 ro, Vec3 rd, uint64_t *voxels) {
+    HitInfo result;
+    result.hit = false;
+    for (int i = 0; i < 1; ++i) {
+        Vec3 voxel_index = vector_floor(scale(ro, 4.0));
+        int flat_index = (int)((int)voxel_index.x + ((int)voxel_index.y * 4) + ((int)voxel_index.z * 4 * 4));
+
+        // Is there a voxel at that index
+        if ((*voxels & ((uint64_t)1 << flat_index)) != 0) {
+            result.hit = true;
+            break;
+        }
+    }
+    result.position = add(box_position, ro);
+    return result;
+}
+
+static HitInfo raycast(Vec3 ro, Vec3 rd, uint64_t *voxels) {
     Vec3 ray_position = ro;
     bool hit = false;
     Vec3 intersection_position = ray_position;
     Vec3 inv_rd = (Vec3){1.0f/rd.x, 1.0f/rd.y, 1.0f/rd.z};
+
+    // Intersection with Bounding Box
 
     // Cube bounds
     const float xmin = 0.0f, ymin = 0.0f, zmin = 0.0f;
@@ -111,17 +132,27 @@ static HitInfo raycast(Vec3 ro, Vec3 rd) {
     if (tmax >= tmin && tmax >= 0.0f) {
         hit = true;
         float t = (tmin >= 0.0f) ? tmin : tmax;  // pick nearest positive
+
+        // TODO dont do this hacky +0.001 to catch float errors
         intersection_position = (Vec3){
-            ro.x + rd.x * t,
-            ro.y + rd.y * t,
-            ro.z + rd.z * t
+            ro.x + rd.x * (t+0.00001),
+            ro.y + rd.y * (t+0.00001),
+            ro.z + rd.z * (t+0.00001)
         };
     }
 
-    return (HitInfo){intersection_position, hit};
+    // Intersection with voxels
+    if (hit) {
+        HitInfo voxel_hit = traverseGrid(vector_floor(intersection_position), sub(intersection_position, vector_floor(intersection_position)), rd, voxels);
+        return voxel_hit;
+    }
+
+    return (HitInfo){intersection_position, false};
 }
 
-static Color shader(int x, int y, Camera *camera, Vec3 forward, Vec3 right, Vec3 up) {
+
+
+static Color shader(int x, int y, Camera *camera, Vec3 forward, Vec3 right, Vec3 up, uint64_t *voxels) {
     float u = (2.0f * x / RENDER_WIDTH - 1.0f);
     float v = (2.0f * y / RENDER_HEIGHT - 1.0f);
 
@@ -131,7 +162,7 @@ static Color shader(int x, int y, Camera *camera, Vec3 forward, Vec3 right, Vec3
 
     Vec3 ray_origin = camera->position;
 
-    HitInfo ray_hit = raycast(ray_origin, ray_direction);
+    HitInfo ray_hit = raycast(ray_origin, ray_direction, voxels);
 
 
     if (ray_hit.hit) {
@@ -169,7 +200,7 @@ void* render_thread(void *arg) {
 
     for (int y = job->y_start; y < job->y_end; ++y) {
         for (int x = 0; x < RENDER_WIDTH; ++x) {
-            Color c = shader(x, y, job->camera, job->forward, job->right, job->up);
+            Color c = shader(x, y, job->camera, job->forward, job->right, job->up, job->voxels);
             job->pixels[y * job->pitch + x] =
                 0xFF000000 | (c.r << 16) | (c.g << 8) | c.b;
         }
@@ -220,10 +251,12 @@ int main() {
 
     // Multithreading variables
     int thread_count = SDL_GetCPUCount();
-    pthread_t threads[16];
-    RenderJob jobs[16];
+    pthread_t threads[thread_count];
+    RenderJob jobs[thread_count];
 
-    int rows_per_thread = RENDER_HEIGHT / thread_count;
+    // Random (4, 4, 4) voxel mask
+    uint64_t voxel_grid = ((uint64_t)rand() << 32) | (uint64_t)rand();
+
 
     // Main Loop
     int running = 1;
@@ -273,10 +306,11 @@ int main() {
         uint32_t *pixels = (uint32_t *)render_surf->pixels;
         int pitch = render_surf->pitch / 4;  // Number of bytes between the start of each row in memory
 
-
+        // Create threads with necessary data
         for (int i = 0; i < thread_count; i++) {
-            int y0 = i * rows_per_thread;  // starting y
-            int y1 = (i == thread_count - 1) ? RENDER_HEIGHT : y0 + rows_per_thread;  // ending y. if last thread, take all the rest
+            int y0 = i * (RENDER_HEIGHT / thread_count);  // start y
+            int y1 = y0 + (RENDER_HEIGHT / thread_count); // end y
+            //int y1 = (i == thread_count - 1) ? RENDER_HEIGHT : y0 + (RENDER_HEIGHT / thread_count);  // end y. if last thread, take all the rest
 
             jobs[i] = (RenderJob){
                 .y_start = y0,
@@ -286,7 +320,8 @@ int main() {
                 .right   = right,
                 .up      = up,
                 .pixels  = pixels,
-                .pitch   = pitch
+                .pitch   = pitch,
+                .voxels = &voxel_grid
             };
 
             pthread_create(&threads[i], NULL, render_thread, &jobs[i]);
@@ -309,11 +344,13 @@ int main() {
         Uint64 end = SDL_GetPerformanceCounter();
         float elapsed = (float)(end - start) / (float)SDL_GetPerformanceFrequency();
         printf("Uncapped FPS: %f\n", 1.0f / elapsed);
+    
         
         float target = FRAME_DELAY / 1000.0f;
         if (elapsed < target)
             SDL_Delay((Uint32)((target - elapsed) * 1000.0f));
-    }
+        
+        }
 
     SDL_DestroyWindow(win);
     SDL_Quit();
